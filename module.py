@@ -752,3 +752,95 @@ class BFR3(nn.Module):
         edges=F.relu(self.mlp_edge(edges))
         return edges
 
+class GraphBlockD(nn.Module):
+    def __init__(self,n_in,n_hid,n_out,gene_num,edges,device,drop_rate=0.):
+        super().__init__()
+
+        self.dropout_prob = drop_rate
+        self.ori_edge=edges.to_dense().float()
+        inv=self.ori_edge.bool()
+        self.thres_edge=~inv
+        self.thres_edge=self.thres_edge.float()
+
+        self.infer=nn.Linear(n_in,n_hid)
+        
+        self.mlp_edge=nn.Linear(n_hid*2,1)
+        self.nodes_mlp=nn.Linear(n_hid*2,n_out)
+
+        self.n_hid=n_hid
+        off_diag = np.ones([gene_num, gene_num])
+        rel_rec = np.array(self.encode_onehot(np.where(off_diag)[0]), dtype=np.float32)
+        rel_send = np.array(self.encode_onehot(np.where(off_diag)[1]), dtype=np.float32)
+        rel_rec = torch.FloatTensor(rel_rec)
+        rel_send = torch.FloatTensor(rel_send)
+        self.rel_rec = Variable(rel_rec).to(device)
+        self.rel_send = Variable(rel_send).to(device)
+
+    def encode_onehot(self,labels):
+        classes = set(labels)
+        classes_dict = {c: np.identity(len(classes))[i, :] for i, c in
+                        enumerate(classes)}
+        labels_onehot = list(map(classes_dict.get, labels))
+        labels_onehot=np.array(labels_onehot,dtype=np.int32)
+        
+        return labels_onehot
+
+
+
+    def forward(self,x,alpha=0.005,use_edge=True):
+        batch,gene_num,_=x.shape
+
+        rel_rec=self.rel_rec
+        rel_send=self.rel_send
+
+        x=F.elu(self.infer(x))
+        x = F.dropout(x, self.dropout_prob)
+
+        receivers = torch.matmul(rel_rec, x)
+        receivers = receivers.view(x.size(0) * receivers.size(1),
+                                   x.size(2))
+
+        
+        senders = torch.matmul(rel_send, x)
+        senders = senders.view(x.size(0) * senders.size(1),
+                               x.size(2))
+
+        edges = torch.cat([senders, receivers], dim=1)
+
+        edges = edges.view(batch, gene_num*gene_num, -1)
+
+        edges=F.relu(self.mlp_edge(edges))
+        
+
+        my_edge=self.ori_edge
+        
+        ori_edge=my_edge.repeat(batch,1,1)
+        ori_edge=ori_edge+alpha*self.thres_edge
+        ori_edge=ori_edge.view(batch,gene_num*gene_num,-1)
+        edges=edges*ori_edge
+
+        
+        edges=edges.view(batch,gene_num*gene_num,-1)
+
+        edges = F.dropout(edges, self.dropout_prob)
+     
+        ### decode
+        receivers = torch.matmul(rel_rec, x)
+        senders = torch.matmul(rel_send, x)
+        pre_msg = torch.cat([senders, receivers], dim=-1)
+        edges=edges.view(batch,gene_num*gene_num,-1)
+
+        if use_edge:
+            pre_msg=pre_msg*edges
+
+        agg_msgs = pre_msg.transpose(-2, -1).matmul(rel_rec).transpose(-2, -1)
+        agg_msgs = agg_msgs.contiguous()
+        
+        agg_msgs=self.nodes_mlp(agg_msgs)
+        agg_msgs = F.dropout(agg_msgs, self.dropout_prob)
+        agg_msgs=F.elu(agg_msgs)
+
+        agg_msgs=agg_msgs+x
+
+        return agg_msgs
+        
