@@ -14,6 +14,14 @@ c_model.py model construction.
 
 module.py BFReg-NN blocks.
 
+d_main.py dynamic prediction task.
+
+dataset.py dataset file for gene trajectory prediction task.
+
+cnf_model.py model file for gene trajectory prediction task.
+
+gt_main.py gene trajectory prediction task.
+
 
 ## Usage
 
